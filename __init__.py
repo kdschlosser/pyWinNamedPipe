@@ -30,6 +30,7 @@ import ctypes
 import threading
 import platform
 import traceback
+from uuid import uuid4 as GUID
 
 try:
     # noinspection PyPep8Naming
@@ -38,31 +39,45 @@ except ImportError:
     import queue
 
 from ctypes.wintypes import (
+    FormatError,
     HANDLE,
     ULONG,
     LPCSTR,
+    LPCWSTR,
     DWORD,
     WORD,
     BOOL,
     BYTE,
+    LPCVOID
 )
+
+from ctypes import POINTER
 
 # various c types that get used when passing data to the Windows functions
 PVOID = ctypes.c_void_p
+LPVOID = ctypes.c_void_p
+LPDWORD = POINTER(DWORD)
+PULONG = POINTER(ULONG)
+LPTSTR = LPCSTR
+LPCTSTR = LPTSTR
 UCHAR = ctypes.c_ubyte
-ULONG_PTR = ctypes.POINTER(ULONG)
 NULL = None
 
-# returned values for kernel32.WaitForSingleObject
+if ctypes.sizeof(ctypes.c_void_p) == 8:
+    ULONG_PTR = ctypes.c_ulonglong
+else:
+    ULONG_PTR = ctypes.c_ulong
+
+# returned values for WaitForSingleObject
 WAIT_OBJECT_0 = 0x00000000
 WAIT_ABANDONED = 0x00000080
 WAIT_TIMEOUT = 0x00000102
 WAIT_FAILED = 0xFFFFFFFF
 
-# can be passed to kernel32.WaitForSingleObject
+# can be passed to WaitForSingleObject
 INFINITE = 0xFFFFFFFF
 
-# bit identifiers for the pipe type, used in kernel32.CreateNamedPipeA
+# bit identifiers for the pipe type, used in CreateNamedPipe
 PIPE_ACCESS_INBOUND = 0x00000001
 PIPE_ACCESS_OUTBOUND = 0x00000002
 PIPE_ACCESS_DUPLEX = 0x00000003
@@ -82,10 +97,22 @@ NMPWAIT_USE_DEFAULT_WAIT = 0x00000000
 NMPWAIT_NOWAIT = 0x00000001
 NMPWAIT_WAIT_FOREVER = 0xFFFFFFFF
 
-FILE_FLAG_OVERLAPPED = 0x40000000
-FILE_ATTRIBUTE_NORMAL = 0x00000080
+FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 
+FILE_FLAG_OVERLAPPED = 0x40000000
+FILE_FLAG_DELETE_ON_CLOSE = 0x04000000
+FILE_FLAG_OPEN_NO_RECALL = 0x00100000
+FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+FILE_FLAG_OPEN_REQUIRING_OPLOCK = 0x00040000
+FILE_FLAG_POSIX_SEMANTICS = 0x0100000
+FILE_FLAG_WRITE_THROUGH = 0x80000000
+FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+FILE_FLAG_SESSION_AWARE = 0x00800000
+FILE_FLAG_RANDOM_ACCESS = 0x10000000
+FILE_FLAG_NO_BUFFERING = 0x20000000
 FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+
+FILE_ATTRIBUTE_NORMAL = 0x00000080
 
 # bit identifiers passed to kernel32.OpenFile
 OPEN_EXISTING = 0x00000003
@@ -115,10 +142,11 @@ ERROR_PIPE_NOT_CONNECTED = 0x000000E9
 ERROR_FILE_NOT_FOUND = 0x00000002
 ERROR_ALREADY_EXISTS = 0x000000B6
 ERROR_ACCESS_DENIED = 0x00000005
+ERROR_IO_INCOMPLETE = 0x000003E4
 ERROR_IO_PENDING = 0x000003E5
 INVALID_HANDLE_VALUE = -1
 
-# bit identifiers passed to kernel32.FormatMessageA located in PipeError
+# bit identifiers passed to FormatMessage located in PipeError
 FORMAT_MESSAGE_ALLOCATE_BUFFER = 0x00000100
 FORMAT_MESSAGE_FROM_SYSTEM = 0x00001000
 
@@ -240,48 +268,136 @@ DEFAULT_SECURITY_ATTRIBUTES.nLength = (
 )
 
 
-# a single Exception class that handles all pipe errors. This queries Windows
-# for an error message if an error code was supplied otherwise it will use the
-# string that has been passed to it. You can check the error code by doing the
-# following
-#
-# try:
-#     # do pipe code here
-# except PipeError as err:
-#     print err[1]
-#
-# the above will print out None if it is an error that does not have a code
-# passed otherwise it will print out a decimal version of the windows error
-# code
+def _decl(name, ret=None, args=()):
+    fn = getattr(kernel32, name)
+    fn.restype = ret
+    fn.argtypes = args
+    return fn
+
+
+GetNamedPipeClientProcessId = _decl(
+    'GetNamedPipeClientProcessId',
+    PULONG,
+    (HANDLE,)
+)
+GetNamedPipeClientSessionId = _decl(
+    'GetNamedPipeClientSessionId',
+    PULONG,
+    (HANDLE,)
+)
+GetNamedPipeServerProcessId = _decl(
+    'GetNamedPipeServerProcessId',
+    PULONG,
+    (HANDLE,)
+)
+GetNamedPipeServerSessionId = _decl(
+    'GetNamedPipeServerSessionId',
+    PULONG,
+    (HANDLE,)
+)
+GetLastError = _decl(
+    'GetLastError',
+    DWORD
+)
+DisconnectNamedPipe = _decl(
+    'DisconnectNamedPipe',
+    BOOL,
+    (HANDLE,)
+)
+ResetEvent = _decl(
+    'ResetEvent',
+    BOOL,
+    (HANDLE,)
+)
+FlushFileBuffers = _decl(
+    'FlushFileBuffers',
+    BOOL,
+    (HANDLE,)
+)
+WaitForSingleObject = _decl(
+    'WaitForSingleObject',
+    DWORD,
+    (HANDLE, DWORD)
+)
+WaitNamedPipe = _decl(
+    'WaitNamedPipeA',
+    BOOL,
+    (LPCTSTR, DWORD)
+)
+SetNamedPipeHandleState = _decl(
+    'SetNamedPipeHandleState',
+    BOOL,
+    (HANDLE, LPDWORD, LPVOID, LPVOID)
+)
+FormatMessage = _decl(
+    'FormatMessageA',
+    DWORD,
+    (DWORD, LPCVOID, DWORD, DWORD, LPVOID, DWORD, LPCVOID)
+)
+CloseHandle = _decl(
+    "CloseHandle",
+    BOOL,
+    (HANDLE,)
+)
+CreateEvent = _decl(
+    "CreateEventA",
+    HANDLE,
+    (LPVOID, BOOL, BOOL, LPCWSTR)
+)
+CreateFile = _decl(
+    "CreateFileA",
+    HANDLE,
+    (LPVOID, DWORD, DWORD, LPVOID, DWORD, DWORD, HANDLE)
+)
+CreateNamedPipe = _decl(
+    "CreateNamedPipeA",
+    HANDLE,
+    (LPVOID, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPVOID)
+)
+ConnectNamedPipe = _decl(
+    "ConnectNamedPipe",
+    BOOL,
+    (HANDLE, LPOVERLAPPED)
+)
+WriteFile = _decl(
+    "WriteFile",
+    BOOL,
+    (HANDLE, LPCVOID, DWORD, LPDWORD, LPOVERLAPPED)
+)
+ReadFile = _decl(
+    "ReadFile",
+    BOOL,
+    (HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED)
+)
+GetOverlappedResult = _decl(
+    "GetOverlappedResult",
+    BOOL,
+    (HANDLE, LPOVERLAPPED, LPDWORD, BOOL)
+)
+
+
+write_lock = threading.Lock()
+
 
 class LOGGING:
 
     @staticmethod
     def debug(data):
-        sys.stdout.write(data + '\n')
+        with write_lock:
+            sys.stdout.write(data + '\n')
 
     @staticmethod
     def error(data):
-        sys.stderr.write(data + '\n')
+        with write_lock:
+            sys.stderr.write(data + '\n')
 
 
 class PipeError(Exception):
     def __init__(self, msg):
         if isinstance(msg, int):
-            buf = ctypes.create_string_buffer(4096)
-
-            kernel32.FormatMessageA(
-                DWORD(FORMAT_MESSAGE_FROM_SYSTEM),
-                NULL,
-                DWORD(msg),
-                DWORD(0),
-                buf,
-                DWORD(4096),
-                NULL
-            )
             err = msg
             err_hex = '0x' + '{0:#0{1}X}'.format(msg, 10)[2:]
-            msg = '{0} [{1}]'.format(buf.value.rstrip(), err_hex)
+            msg = '{0} [{1}]'.format(FormatError(msg), err_hex)
             self._msg = [msg, err]
         else:
             self._msg = [msg, None]
@@ -304,7 +420,7 @@ def _create_pipe_name(name):
 # used to check the existence of the named pipe. This is a means to know
 # whether or not EG is running
 def is_pipe_running(name):
-    pipe_handle = kernel32.CreateNamedPipeA(
+    pipe_handle = CreateNamedPipe(
         _create_pipe_name(name),
         PIPE_ACCESS_DUPLEX,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
@@ -314,8 +430,8 @@ def is_pipe_running(name):
         50,
         NULL
     )
-    err = kernel32.GetLastError()
-    kernel32.CloseHandle(pipe_handle)
+    err = GetLastError()
+    CloseHandle(pipe_handle)
 
     if err:
         return True
@@ -327,23 +443,19 @@ def is_pipe_running(name):
 class PipeInstance(object):
 
     def __init__(self, pipe_name, pipe_handle, packet_size):
-        self._pipe_name = pipe_name
-        self._pipe_handle = pipe_handle
-        self._packet_size = packet_size
-
-        self._write_queue = queue.Queue()
-        self._write_io = []
-
-        self._read_queue = queue.Queue()
-        self._read_overlap = None
-        self._read_event = None
-        self._read_buffer = None
+        self.__pipe_name = pipe_name
+        self.__pipe_handle = pipe_handle
+        self.__packet_size = packet_size
+        self.__read_queue = queue.Queue()
+        self.__read_overlap = None
+        self.__read_event = None
+        self.__read_buffer = None
 
         # create an instance os the overlapped io structure
-        self._client_overlap = OVERLAPPED()
+        self.__client_overlap = OVERLAPPED()
 
         # get an event handle from Windows
-        self._client_event = kernel32.CreateEventA(
+        self.__client_event = CreateEvent(
             NULL,  # default security attribute
             True,  # manual-reset event
             False,  # initial state
@@ -352,30 +464,31 @@ class PipeInstance(object):
 
         # if for some reason Windows is not able to give us an event handle
         # stop everything right there
-        if self._client_event == NULL:
-            err = kernel32.GetLastError()
+        if self.__client_event == NULL:
+            err = GetLastError()
             raise PipeError(err)
 
         # set the event handle into the overlapped io instance
-        self._client_overlap.hEvent = self._client_event
+        self.__client_overlap.hEvent = self.__client_event
+        self.__client_wait = threading.Event()
 
         # if a client is connected to the pipe
         self.has_client = False
-        self._pending_connection = False
+        self.__pending_connection = False
 
         # threading bits
+        LOGGING.debug(
+            'SERVER: {0}: IO worker starting'.format(self.__pipe_handle)
+        )
         self.__lock = threading.RLock()
         self.__io_event = threading.Event()
-        self.__io_thread = threading.Thread(
-            name='Named Pipe {0} IO Worker'.format(str(pipe_handle)),
-            target=self.__io
+        self.__io_read = threading.Thread(
+            name='Client Pipe {0} Read Worker'.format(str(self.__pipe_handle)),
+            target=self.__read_loop
         )
-
-        # even tho there is a shutdown procedure for the pipe we still want to
-        # end the thread that controls the pipe in the event the main process
-        # terminates without running the shutdown procedure
-        self.__io_thread.daemon = True
-        self.__io_thread.start()
+        self.__io_read.daemon = True
+        self.__io_read.start()
+        self.connect()
 
     # since creating a closing pipe instances takes time to do, we only do it
     # once.
@@ -383,22 +496,23 @@ class PipeInstance(object):
     # memory use we reuse the pipe when the client disconnects or an error
     # takes place
     def reconnect(self):
+        LOGGING.debug(
+            'SERVER: {0}: reconnect'.format(self.__pipe_handle)
+        )
+
         with self.__lock:
             # this disconnects the client end of the pipe it does not close the
             # pipe
-            kernel32.DisconnectNamedPipe(self._pipe_handle)
+            self.__client_wait.clear()
+            DisconnectNamedPipe(self.__pipe_handle)
             # reset data storage containers
-            self._write_queue = queue.Queue()
-            self._write_io = []
-
-            self._read_queue = queue.Queue()
-            self._read_overlap = None
-            self._read_event = None
-            self._read_buffer = None
-
-            kernel32.ResetEvent(self._client_event)
+            self.__read_queue = queue.Queue()
+            self.__read_overlap = None
+            self.__read_event = None
+            self.__read_buffer = None
             self.has_client = False
-            self._pending_connection = False
+            self.__pending_connection = False
+            ResetEvent(self.__client_event)
 
     # if the pipe is open or closed. closed means a client can no longer
     # connect to this pipe instance
@@ -409,91 +523,194 @@ class PipeInstance(object):
     # closes the pipe instance
     def close(self):
         LOGGING.debug(
-            'Closing pipe ' + str(self._pipe_handle)
+            'SERVER: {0}: closing'.format(self.__pipe_handle)
         )
         self.__io_event.set()
+        self.__client_wait.set()
 
-        if threading.currentThread() != self.__io_thread:
-            # if not self.has_client:
-            #     try:
-            #         send_single_message(
-            #             self._pipe_name,
-            #             'stop_pipe',
-            #             self._packet_size
-            #         )
-            #     except PipeError:
-            #         pass
-            self.__io_thread.join(1.0)
+        if threading.currentThread() != self.__io_read:
+            self.__io_read.join(1.0)
+
+        FlushFileBuffers(self.__pipe_handle)
+        DisconnectNamedPipe(self.__pipe_handle)
+        CloseHandle(self.__pipe_handle)
+        CloseHandle(self.__read_event)
+
+        LOGGING.debug(
+            'SERVER: {0}: closed'.format(self.__pipe_handle)
+        )
 
     @property
     def has_data(self):
-        return not self._read_queue.empty()
+        return not self.__read_queue.empty()
 
     def read(self):
         if not self.has_data:
             raise PipeError('No data available')
         try:
-            return self._read_queue.get()
+            return self.__read_queue.get()
         finally:
-            self._read_queue.task_done()
+            self.__read_queue.task_done()
 
-    def write(self, data):
-        self._write_queue.put(data)
+    def write(self, data, callback=None):
+        guid = GUID()
+
+        def do(write_data, write_callback, write_guid):
+
+            LOGGING.debug(
+                'SERVER: {0}: creating write overlap event'.format(
+                    self.__pipe_handle
+                )
+            )
+            write_overlap = OVERLAPPED()
+
+            write_event = CreateEvent(
+                NULL,
+                True,
+                False,
+                NULL
+            )
+
+            if write_event == NULL:
+                err = GetLastError()
+                raise PipeError(err)
+
+            write_overlap.hEvent = write_event
+
+            if self.__write(write_data, write_overlap):
+                CloseHandle(write_overlap.hEvent)
+                if write_callback:
+                    write_callback(write_guid)
+
+            else:
+                result = 0
+
+                while not result:
+
+                    write_bytes = DWORD(0)
+                    result = GetOverlappedResult(
+                        self.__pipe_handle,
+                        ctypes.byref(write_overlap),
+                        ctypes.byref(write_bytes),
+                        True
+                    )
+
+                    err = GetLastError()
+
+                    if result:
+                        if write_bytes.value == len(write_data):
+                            LOGGING.debug(
+                                'SERVER: {0}: pending data written'.format(
+                                    str(self.__pipe_handle)
+                                )
+                            )
+                            CloseHandle(write_overlap.hEvent)
+
+                            if write_callback:
+                                write_callback(write_guid)
+                        else:
+                            result = 0
+
+                    elif err not in (
+                        ERROR_IO_PENDING,
+                        ERROR_IO_INCOMPLETE
+                    ):
+                        CloseHandle(write_overlap.hEvent)
+                        try:
+                            raise PipeError(err)
+                        except PipeError:
+                            LOGGING.error(traceback.format_exc())
+                            self.reconnect()
+                            return
+
+                    ResetEvent(write_overlap.hEvent)
+
+        t = threading.Thread(target=do, args=(data, callback, guid))
+        t.daemon = True
+
+        try:
+            return guid
+        finally:
+            t.start()
 
     def __write(self, write_buffer, write_overlap):
-        self.pending_io = True
-
-        result = kernel32.WriteFile(
-            self._pipe_handle,
+        LOGGING.debug(
+            'SERVER: {0}: writing pipe'.format(self.__pipe_handle)
+        )
+        result = WriteFile(
+            self.__pipe_handle,
             LPCSTR(write_buffer),
             len(write_buffer),
             NULL,
             ctypes.byref(write_overlap)
         )
 
-        err = kernel32.GetLastError()
+        err = GetLastError()
 
         if result:
+            LOGGING.debug(
+                'SERVER: {0}: data written'.format(self.__pipe_handle)
+            )
             return False
         if err == ERROR_IO_PENDING:
+            LOGGING.debug(
+                'SERVER: {0}: data pending write'.format(self.__pipe_handle)
+            )
             return True
         elif err:
-            LOGGING.error(traceback.format_exc())
+            try:
+                raise PipeError(err)
+            except PipeError:
+                LOGGING.error(traceback.format_exc())
+            CloseHandle(write_overlap.hEvent)
             self.reconnect()
             return True
 
-    def _reset_read(self):
-        self._read_overlap = OVERLAPPED()
-        self._read_event = kernel32.CreateEventA(NULL, True, False, NULL)
-        if self._read_event == NULL:
-            err = kernel32.GetLastError()
+    def __reset_read(self):
+        LOGGING.debug(
+            'SERVER: {0}: reset read event'.format(self.__pipe_handle)
+        )
+        CloseHandle(self.__read_event)
+        self.__read_overlap = OVERLAPPED()
+        self.__read_event = CreateEvent(NULL, True, False, NULL)
+        if self.__read_event == NULL:
+            err = GetLastError()
             raise PipeError(err)
 
-        self._read_overlap.hEvent = self._read_event
-        self._read_buffer = ctypes.create_string_buffer(self._packet_size)
+        self.__read_overlap.hEvent = self.__read_event
+        self.__read_buffer = ctypes.create_string_buffer(self.__packet_size)
 
     def __read(self):
-        result = kernel32.ReadFile(
-            self._pipe_handle,
-            self._read_buffer,
-            self._packet_size,
+        LOGGING.debug(
+            'SERVER: {0}: reading'.format(self.__pipe_handle)
+        )
+        result = ReadFile(
+            self.__pipe_handle,
+            self.__read_buffer,
+            self.__packet_size,
             NULL,
-            ctypes.byref(self._read_overlap)
+            ctypes.byref(self.__read_overlap)
         )
 
-        err = kernel32.GetLastError()
+        err = GetLastError()
 
         if result:
-            read_buffer = self._read_buffer.value
+            read_buffer = self.__read_buffer.value
             if read_buffer:
                 if read_buffer == 'stop_pipe':
                     self.close()
                 else:
-                    self._read_queue.put(read_buffer)
-                    self._reset_read()
+                    LOGGING.debug(
+                        'SERVER: {0}: data received'.format(
+                            self.__pipe_handle)
+                    )
+                    self.__read_queue.put(read_buffer)
+                    self.__reset_read()
 
         elif err == ERROR_IO_PENDING:
-            pass
+            LOGGING.debug(
+                'SERVER: {0}: pending read'.format(self.__pipe_handle)
+            )
 
         elif err in (
             ERROR_BROKEN_PIPE,
@@ -511,27 +728,55 @@ class PipeInstance(object):
                 LOGGING.error(traceback.format_exc())
                 self.reconnect()
 
-    def __io(self):
-        while not self.__io_event.isSet():
-            if not self.has_client and not self._pending_connection:
-                self._pending_connection = not self.connect()
+    def __read_loop(self):
+        LOGGING.debug(
+            'SERVER: {0}: read thread started'.format(str(self.__pipe_handle))
+        )
 
-                if not self._pending_connection:
-                    LOGGING.debug(
-                        'Named pipe {0} connected'.format(
-                            str(self._pipe_handle))
+        while not self.__io_event.isSet():
+            self.__client_wait.wait()
+            if self.__io_event.isSet():
+                continue
+
+            with self.__lock:
+                LOGGING.debug(
+                    'SERVER: {0} waiting for event'.format(
+                        str(self.__pipe_handle)
                     )
-            elif not self.has_client and self._pending_connection:
-                result = kernel32.WaitForSingleObject(
-                    self._pipe_handle,
-                    50
                 )
 
-                if result == WAIT_TIMEOUT:
-                    continue
+                read_bytes = DWORD(0)
+                result = GetOverlappedResult(
+                    self.__pipe_handle,
+                    ctypes.byref(self.__read_overlap),
+                    ctypes.byref(read_bytes),
+                    True
+                )
 
-                if result in (WAIT_ABANDONED, WAIT_FAILED):
-                    err = kernel32.GetLastError()
+                err = GetLastError()
+
+                if result:
+                    if read_bytes.value != 0:
+                        LOGGING.debug(
+                            'SERVER: {0} read event'.format(
+                                str(self.__pipe_handle)
+                            )
+                        )
+                        LOGGING.debug(
+                            'SERVER: {0}: data read'.format(
+                                str(self.__pipe_handle)
+                            )
+                        )
+
+                        if self.__read_buffer.value == 'stop_pipe':
+                            self.close()
+                            return
+
+                        self.__read_queue.put(self.__read_buffer.value)
+
+                elif err not in (ERROR_IO_PENDING, ERROR_IO_INCOMPLETE):
+                    if err == ERROR_BROKEN_PIPE:
+                        return
                     try:
                         raise PipeError(err)
                     except PipeError:
@@ -539,168 +784,430 @@ class PipeInstance(object):
                         self.reconnect()
                         continue
 
-                LOGGING.debug(
-                    'Named pipe {0} connected'.format(
-                        str(self._pipe_handle))
-                )
-                self._pending_connection = False
-                self.has_client = True
-                self._reset_read()
+                self.__reset_read()
                 self.__read()
 
-            if self.has_client:
-                with self.__lock:
-                    result = kernel32.WaitForSingleObject(
-                        self._pipe_handle,
-                        50
-                    )
-
-                    if result == WAIT_TIMEOUT:
-                        continue
-
-                    if result in (WAIT_ABANDONED, WAIT_FAILED):
-                        err = kernel32.GetLastError()
-                        try:
-                            raise PipeError(err)
-                        except PipeError:
-                            LOGGING.error(traceback.format_exc())
-                            self.reconnect()
-                            continue
-
-                    LOGGING.debug(
-                        'Named pipe {0} incoming event'.format(
-                            str(self._pipe_handle)
-                        )
-                    )
-
-                    read_bytes = ULONG(0)
-
-                    # result = kernel32.GetOverlappedResult(
-                    #     handle to pipe,
-                    #     ctypes.byref(# OVERLAPPED structure),
-                    #     bytes transferred,
-                    #     do not wait
-                    # )
-
-                    result = kernel32.GetOverlappedResult(
-                        self._pipe_handle,
-                        ctypes.byref(self._read_overlap),
-                        ctypes.byref(read_bytes),
-                        False
-                    )
-
-                    err = kernel32.GetLastError()
-
-                    if result:
-                        if read_bytes.value != 0:
-                            if self._read_buffer.value == 'stop_pipe':
-                                self.close()
-                                return
-
-                            self._read_queue.put(self._read_buffer.value)
-                            self._reset_read()
-                            self.__read()
-
-                    elif err != ERROR_IO_PENDING:
-                        try:
-                            raise PipeError(err)
-                        except PipeError:
-                            LOGGING.error(traceback.format_exc())
-                            self.reconnect()
-                            continue
-
-                    for write_buffer, write_overlapped in self._write_io:
-                        write_bytes = ULONG(0)
-                        result = kernel32.GetOverlappedResult(
-                            self._pipe_handle,
-                            ctypes.byref(write_overlapped),
-                            ctypes.byref(write_bytes),
-                            False
-                        )
-
-                        err = kernel32.GetLastError()
-
-                        if result:
-                            if write_bytes.value == len(write_buffer):
-                                self._write_io.remove(
-                                    (write_buffer, write_overlapped)
-                                )
-                            else:
-                                self._write_queue.put(write_buffer)
-
-                        elif err != ERROR_IO_PENDING:
-                            try:
-                                raise PipeError(err)
-                            except PipeError:
-                                LOGGING.error(traceback.format_exc())
-                                self.reconnect()
-                                continue
-
-                        if not self._write_queue.empty():
-                            write_buffer = self._write_queue.get()
-                            self._write_queue.task_done()
-
-                            write_overlap = OVERLAPPED()
-                            write_event = kernel32.CreateEventA(
-                                NULL,
-                                True,
-                                False,
-                                NULL
-                            )
-
-                            if write_event == NULL:
-                                err = kernel32.GetLastError()
-                                raise PipeError(err)
-
-                            write_overlap.hEvent = write_event
-
-                            if self.__write(write_buffer, write_overlap):
-                                self._write_io.append(
-                                    (write_buffer, write_overlap)
-                                )
-
-        kernel32.FlushFileBuffers(self._pipe_handle)
-        kernel32.DisconnectNamedPipe(self._pipe_handle)
-        kernel32.CloseHandle(self._pipe_handle)
-
     def connect(self):
-        LOGGING.debug('Connecting named pipe')
-
-        result = kernel32.ConnectNamedPipe(
-            self._pipe_handle,
-            ctypes.byref(self._client_overlap)
+        result = ConnectNamedPipe(
+            self.__pipe_handle,
+            ctypes.byref(self.__client_overlap)
         )
-        err = kernel32.GetLastError()
+        err = GetLastError()
 
         if result:
-            self.has_client = True
+            pass
 
         elif err == ERROR_IO_PENDING:
-            self.has_client = False
+            LOGGING.debug(
+                'SERVER: {0} waiting for connection'.format(
+                    str(self.__pipe_handle)
+                )
+            )
+            result = GetOverlappedResult(
+                self.__pipe_handle,
+                ctypes.byref(self.__client_overlap),
+                ctypes.byref(DWORD(0)),
+                True
+            )
+            err = GetLastError()
+
+            if not result:
+                try:
+                    raise PipeError(err)
+                except PipeError:
+                    LOGGING.error(traceback.format_exc())
+                self.reconnect()
+
+                return
 
         elif err == ERROR_PIPE_CONNECTED:
-            self.has_client = True
+            pass
 
+        elif err:
+            raise PipeError(err)
+
+        self.has_client = True
+        LOGGING.debug(
+            'SERVER: {0} client connected'.format(
+                str(self.__pipe_handle)
+            )
+        )
+        self.__reset_read()
+        self.__read()
+        self.__client_wait.set()
+
+
+class Client(object):
+
+    def __init__(self, pipe_name, packet_size=DEFAULT_PACKET_SIZE):
+        self.__packet_size = packet_size
+        self.__pipe_name = pipe_name
+        self.__read_queue = None
+        self.__pipe_handle = None
+        self.__read_overlap = None
+        self.__read_event = None
+        self.__read_buffer = None
+        self.__io_read = None
+        self.__lock = None
+        self.__io_event = None
+
+    def open(self):
+        if self.__pipe_handle is not None:
+            raise PipeError('Client has already been opened.')
+        self.__read_queue = queue.Queue()
+
+        pipe_name = _create_pipe_name(self.__pipe_name)
+
+        LOGGING.debug('CLIENT: opening {0}'.format(self.__pipe_name))
+
+        while True:
+            self.__pipe_handle = CreateFile(
+                pipe_name,
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                NULL,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING,
+                NULL
+            )
+
+            err = GetLastError()
+            if self.__pipe_handle != INVALID_HANDLE_VALUE:
+                break
+            if err == ERROR_PIPE_BUSY:
+                pass
+            elif not WaitNamedPipe(pipe_name, 20000):
+                CloseHandle(self.__pipe_handle)
+                self.__pipe_handle = None
+                raise PipeError(err)
+
+        LOGGING.debug(
+            'CLIENT: {0}: {1} opened'.format(
+                str(self.__pipe_handle),
+                pipe_name
+            )
+        )
+        pipe_mode = DWORD(PIPE_READMODE_MESSAGE)
+
+        LOGGING.debug(
+            'CLIENT: {0}: setting handle state'.format(
+                str(self.__pipe_handle)
+            )
+        )
+        result = SetNamedPipeHandleState(
+            self.__pipe_handle,
+            ctypes.byref(pipe_mode),
+            NULL,
+            NULL
+        )
+
+        if not result:
+            err = GetLastError()
+            CloseHandle(self.__pipe_handle)
+            self.__pipe_handle = None
+
+            raise PipeError(err)
+        LOGGING.debug(
+            'CLIENT: {0}: IO thread start'.format(str(self.__pipe_handle))
+        )
+        self.__lock = threading.RLock()
+        self.__io_event = threading.Event()
+        self.__io_read = threading.Thread(
+            name='Client Pipe {0} Read Worker'.format(str(self.__pipe_handle)),
+            target=self.__read_loop
+        )
+
+        self.__io_read.daemon = True
+        self.__io_read.start()
+
+    @property
+    def is_open(self):
+        return not self.__io_event.isSet()
+
+    def close(self):
+        if self.__pipe_handle is None:
+            raise PipeError(
+                'You need to call open to open the client connection first'
+            )
+        LOGGING.debug(
+            'CLIENT: {0}: closing'.format(str(self.__pipe_handle))
+        )
+        self.__io_event.set()
+        self.__io_read.join(1.0)
+        DisconnectNamedPipe(self.__pipe_handle)
+        CloseHandle(self.__pipe_handle)
+        LOGGING.debug(
+            'CLIENT: {0}: closed'.format(str(self.__pipe_handle))
+        )
+        self.__pipe_handle = None
+        CloseHandle(self.__read_event)
+
+    @property
+    def has_data(self):
+        if self.__pipe_handle is None:
+            raise PipeError(
+                'You need to call open to open the client connection first'
+            )
+        return not self.__read_queue.empty()
+
+    def read(self):
+        if self.__pipe_handle is None:
+            raise PipeError(
+                'You need to call open to open the client connection first'
+            )
+
+        if not self.has_data:
+            raise PipeError('No data available')
+        try:
+            return self.__read_queue.get()
+        finally:
+            self.__read_queue.task_done()
+
+    def write(self, data, callback=None):
+        guid = GUID()
+
+        def do(write_data, write_callback, write_guid):
+
+            LOGGING.debug(
+                'CLIENT: {0}: creating write overlap event'.format(
+                    self.__pipe_handle
+                )
+            )
+            write_overlap = OVERLAPPED()
+
+            write_event = CreateEvent(
+                NULL,
+                True,
+                False,
+                NULL
+            )
+
+            if write_event == NULL:
+                err = GetLastError()
+                raise PipeError(err)
+
+            write_overlap.hEvent = write_event
+
+            if self.__write(write_data, write_overlap):
+                CloseHandle(write_overlap.hEvent)
+                if write_callback:
+                    write_callback(write_guid)
+
+            else:
+                result = 0
+
+                while not result:
+
+                    write_bytes = DWORD(0)
+                    result = GetOverlappedResult(
+                        self.__pipe_handle,
+                        ctypes.byref(write_overlap),
+                        ctypes.byref(write_bytes),
+                        True
+                    )
+
+                    err = GetLastError()
+
+                    if result:
+                        if write_bytes.value == len(write_data):
+                            LOGGING.debug(
+                                'CLIENT: {0}: pending data written'.format(
+                                    str(self.__pipe_handle)
+                                )
+                            )
+                            CloseHandle(write_overlap.hEvent)
+
+                            if write_callback:
+                                write_callback(write_guid)
+                        else:
+                            result = 0
+
+                    elif err not in (
+                        ERROR_IO_PENDING,
+                        ERROR_IO_INCOMPLETE
+                    ):
+                        CloseHandle(write_overlap.hEvent)
+                        raise PipeError(err)
+
+                    ResetEvent(write_overlap.hEvent)
+
+        t = threading.Thread(target=do, args=(data, callback, guid))
+        t.daemon = True
+
+        try:
+            return guid
+        finally:
+            t.start()
+
+    def __write(self, write_buffer, write_overlap):
+        LOGGING.debug(
+            'CLIENT: {0}: writing pipe'.format(str(self.__pipe_handle))
+        )
+        result = WriteFile(
+            self.__pipe_handle,
+            LPCSTR(write_buffer),
+            len(write_buffer),
+            NULL,
+            ctypes.byref(write_overlap)
+        )
+
+        err = GetLastError()
+
+        if result:
+            LOGGING.debug(
+                'CLIENT: {0}: data written'.format(str(self.__pipe_handle))
+            )
+            return False
+        if err == ERROR_IO_PENDING:
+            LOGGING.debug(
+                'CLIENT: {0}: data pending write'.format(str(self.__pipe_handle))
+            )
+            return True
         elif err:
             try:
                 raise PipeError(err)
             except PipeError:
                 LOGGING.error(traceback.format_exc())
+            return True
 
-            self.reconnect()
+    def __reset_read(self):
+        LOGGING.debug(
+            'CLIENT: {0}: resetting read buffers'.format(str(self.__pipe_handle))
+        )
+        self.__read_overlap = OVERLAPPED()
+        self.__read_event = CreateEvent(NULL, True, False, NULL)
+        if self.__read_event == NULL:
+            err = GetLastError()
+            raise PipeError(err)
 
-        return self.has_client
+        self.__read_overlap.hEvent = self.__read_event
+        self.__read_buffer = ctypes.create_string_buffer(self.__packet_size)
+
+    def __read(self):
+        LOGGING.debug(
+            'CLIENT: {0}: reading'.format(str(self.__pipe_handle))
+        )
+        result = ReadFile(
+            self.__pipe_handle,
+            self.__read_buffer,
+            self.__packet_size,
+            NULL,
+            ctypes.byref(self.__read_overlap)
+        )
+
+        err = GetLastError()
+
+        if result:
+            LOGGING.debug(
+                'CLIENT: {0} data read'.format(str(self.__pipe_handle))
+            )
+            read_buffer = self.__read_buffer.value
+            if read_buffer:
+                self.__read_queue.put(read_buffer)
+                self.__reset_read()
+
+        elif err != ERROR_IO_PENDING:
+            raise PipeError(err)
+
+        LOGGING.debug(
+            'CLIENT: {0}: data being read'.format(str(self.__pipe_handle))
+        )
+
+    def __write_loop(self):
+        while not self.__io_event.isSet():
+            result = WaitForSingleObject(
+                self.__pipe_handle,
+                NMPWAIT_WAIT_FOREVER
+            )
+
+            if result == WAIT_TIMEOUT:
+                continue
+
+            if result in (WAIT_ABANDONED, WAIT_FAILED):
+                err = GetLastError()
+                raise PipeError(err)
+
+            for write_data in self.__write_io[:]:
+                write_buffer, write_overlap, callback, guid = write_data
+                write_bytes = DWORD(0)
+                result = GetOverlappedResult(
+                    self.__pipe_handle,
+                    ctypes.byref(write_overlap),
+                    ctypes.byref(write_bytes),
+                    False
+                )
+
+                err = GetLastError()
+
+                if result:
+                    LOGGING.debug(
+                        'CLIENT: {0}: write event'.format(
+                            str(self.__pipe_handle)
+                        )
+                    )
+                    if write_bytes.value == len(write_buffer):
+                        LOGGING.debug(
+                            'CLIENT: {0}: pending data written'.format(
+                                str(self.__pipe_handle)
+                            )
+                        )
+                        self.__write_io.remove(write_data)
+
+                        if callback is not None:
+                            callback(guid)
+                        break
+
+                elif err not in (ERROR_IO_PENDING, ERROR_IO_INCOMPLETE):
+                    raise PipeError(err)
+
+    def __read_loop(self):
+        LOGGING.debug(
+            'CLIENT: {0}: read thread started'.format(str(self.__pipe_handle))
+        )
+        self.__reset_read()
+        while not self.__io_event.isSet():
+
+            read_bytes = DWORD(0)
+            result = GetOverlappedResult(
+                self.__pipe_handle,
+                ctypes.byref(self.__read_overlap),
+                ctypes.byref(read_bytes),
+                True
+            )
+
+            err = GetLastError()
+
+            if result:
+                if self.__read_buffer.value:
+                    LOGGING.debug(
+                        'CLIENT: {0} read event'.format(
+                            str(self.__pipe_handle)
+                        )
+                    )
+                    LOGGING.debug(
+                        'CLIENT: {0}: data read'.format(
+                            str(self.__pipe_handle)
+                        )
+                    )
+
+                    self.__read_queue.put(self.__read_buffer.value)
+
+            elif err not in (ERROR_IO_PENDING, ERROR_IO_INCOMPLETE):
+                if err == ERROR_BROKEN_PIPE:
+                    return
+                raise PipeError(err)
+
+            self.__reset_read()
+            self.__read()
 
 
-# container object that holds the pipe instances. This container checks for
-# closed pipes and removes them. it also checks to see if eg.config.maxPipes
-# has changed and if the number is now lower it will close any pipes that are
-# not connected to a client. it will do this each time the container is
-# accessed until the number of pipe instances matches eg.config.maxPipes
 class PipesContainer(object):
     __lock = threading.RLock()
     __pipes = []
     max_pipes = None
+
+    def __init__(self, parent):
+        self.__parent = parent
 
     def append(self,  p_object):
         with self.__lock:
@@ -801,6 +1308,7 @@ class PipesContainer(object):
             for pipe_instance in self.__pipes:
                 if not pipe_instance.is_open:
                     self.__pipes.remove(pipe_instance)
+                    self.__parent.create_pipe_event.set()
 
             if self.max_pipes == PIPE_UNLIMITED_INSTANCES:
                 to_many = 0
@@ -877,9 +1385,10 @@ class Server:
             max_instances = PIPE_UNLIMITED_INSTANCES
 
         self._thread = None
-        self._pipes = PipesContainer()
+        self._pipes = PipesContainer(self)
         self._stopped = False
         self._event = threading.Event()
+        self.create_pipe_event = threading.Event()
         self._pipe_name = pipe_name
         self._max_instances = max_instances
         self._time_out = time_out
@@ -893,6 +1402,10 @@ class Server:
                 yield pipe_instance
 
     def open(self):
+        LOGGING.debug(
+            'SERVER: {0}: opening'.format(
+                self._pipe_name)
+        )
         if self._thread is None:
             self._thread = threading.Thread(
                 name='{0} Named Pipe'.format(self._pipe_name),
@@ -901,7 +1414,12 @@ class Server:
             self._thread.start()
 
     def close(self):
+        LOGGING.debug(
+            'SERVER: {0}: closing'.format(
+                self._pipe_name)
+        )
         self._event.set()
+        self.create_pipe_event.set()
         self._thread.join(3.0)
         return self._stopped
 
@@ -944,9 +1462,16 @@ class Server:
                     break
             else:
                 def open_pipe():
-                    LOGGING.debug('Creating named pipe')
                     if len(self._pipes) == 0:
-                        pipe_handle = kernel32.CreateNamedPipeA(
+                        LOGGING.debug(
+                            'SERVER: {0}: creating'.format(
+                                self._pipe_name)
+                        )
+                        LOGGING.debug(
+                            'SERVER: {0}: creating entry point'.format(
+                                self._pipe_name)
+                        )
+                        pipe_handle = CreateNamedPipe(
                             pipe_name,
                             (
                                 PIPE_ACCESS_DUPLEX |
@@ -965,7 +1490,11 @@ class Server:
                             ctypes.byref(self._security)
                         )
                     else:
-                        pipe_handle = kernel32.CreateNamedPipeA(
+                        LOGGING.debug(
+                            'SERVER: {0}: creating entry point'.format(
+                                self._pipe_name)
+                        )
+                        pipe_handle = CreateNamedPipe(
                             pipe_name,
                             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                             (
@@ -980,16 +1509,19 @@ class Server:
                             ctypes.byref(self._security)
                         )
 
-                    if pipe_handle == INVALID_HANDLE_VALUE:
-                        err = kernel32.GetLastError()
+                    err = GetLastError()
 
-                        kernel32.DisconnectNamedPipe(pipe_handle)
-                        kernel32.CloseHandle(pipe_handle)
-                        if err:
-                            raise PipeError(err)
-                        else:
-                            raise PipeError('Unable to create named pipe')
+                    if err:
+                        DisconnectNamedPipe(pipe_handle)
+                        CloseHandle(pipe_handle)
+                        raise PipeError(err)
 
+                    LOGGING.debug(
+                        'SERVER: {0}: entry point {1} created'.format(
+                            self._pipe_name,
+                            pipe_handle
+                        )
+                    )
                     return pipe_handle
                 if max_instances != -1 and len(self._pipes) == max_instances:
                     continue
@@ -1007,9 +1539,8 @@ class Server:
                     )
                     self._pipes.append(pipe_instance)
 
-            self._event.wait(0.2)
-
-        LOGGING.debug('Closing named pipe')
+            self.create_pipe_event.wait()
+            self.create_pipe_event.clear()
 
         while self._pipes:
             pipe_instance = self._pipes.pop(0)
@@ -1017,170 +1548,17 @@ class Server:
                 continue
             pipe_instance.close()
 
-        LOGGING.debug('Named pipe is closed')
+        LOGGING.debug(
+            'SERVER: {0}: closed'.format(
+                self._pipe_name)
+        )
         self._stopped = True
-
-
-class Client(object):
-
-    def __init__(self, pipe_name, packet_size=DEFAULT_PACKET_SIZE):
-        self._packet_size = packet_size
-        self._pipe_name = pipe_name
-        self._read_queue = None
-        self._write_queue = None
-        self.__read_event = None
-        self.__write_event = None
-        self.__read_thread = None
-        self.__write_thread = None
-        self._pipe_handle = None
-
-    def open(self):
-        self._read_queue = queue.Queue()
-        self._write_queue = queue.Queue()
-        self.__read_event = threading.Event()
-        self.__write_event = threading.Event()
-        self.__read_thread = threading.Thread(
-            name='Client Pipe {0} Read'.format(self._pipe_name),
-            target=self.__read
-        )
-        self.__write_thread = threading.Thread(
-            name='Client Pipe {0} Write'.format(self._pipe_name),
-            target=self.__write
-        )
-        self.__read_thread.daemon = True
-        self.__write_thread.daemon = True
-
-        pipe_name = _create_pipe_name(self._pipe_name)
-
-        while True:
-            self._pipe_handle = kernel32.CreateFileA(
-                pipe_name,
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                NULL,
-                OPEN_EXISTING,
-                0,
-                NULL
-            )
-
-            err = kernel32.GetLastError()
-
-            if self._pipe_handle != INVALID_HANDLE_VALUE:
-                break
-            if err == ERROR_PIPE_BUSY:
-                pass
-            elif not kernel32.WaitNamedPipeA(pipe_name, 2000):
-                kernel32.CloseHandle(self._pipe_handle)
-                self._pipe_handle = None
-                raise PipeError(err)
-
-        pipe_mode = ULONG(PIPE_READMODE_MESSAGE)
-
-        result = kernel32.SetNamedPipeHandleState(
-            self._pipe_handle,
-            ctypes.byref(pipe_mode),
-            NULL,
-            NULL
-        )
-
-        if not result:
-            err = kernel32.GetLastError()
-            kernel32.CloseHandle(self._pipe_handle)
-            self._pipe_handle = None
-            if err:
-                raise PipeError(err)
-            else:
-                raise PipeError(
-                    'send_single_message SetNamedPipeHandleState failed'
-                )
-
-        self.__read_thread.start()
-        self.__write_thread.start()
-
-    def __write(self):
-        while not self.__write_event.isSet():
-            if not self._write_queue.empty():
-                write_buffer = self._write_queue.get()
-
-                write_bytes = ULONG(0)
-                while len(write_buffer) != write_bytes.value:
-                    result = kernel32.WriteFile(
-                        self._pipe_handle,
-                        LPCSTR(write_buffer),
-                        len(write_buffer),
-                        ctypes.byref(write_bytes),
-                        None
-                    )
-                    if not result:
-                        err = kernel32.GetLastError()
-
-                        if err != ERROR_MORE_DATA:
-                            kernel32.CloseHandle(self._pipe_handle)
-                            raise PipeError(err)
-
-                self._write_queue.task_done()
-
-    def __read(self):
-        while not self.__read_event.isSet():
-            result = 0
-            read_buffer = ctypes.create_string_buffer(self._packet_size)
-            read_bytes = ULONG(0)
-
-            while not result:  # repeat loop if ERROR_MORE_DATA
-                result = kernel32.ReadFile(
-                    self._pipe_handle,
-                    read_buffer,
-                    self._packet_size,
-                    ctypes.byref(read_bytes),
-                    NULL
-                )
-
-                err = kernel32.GetLastError()
-                if err != ERROR_MORE_DATA:
-                    break
-            if read_bytes.value != 0:
-                self._read_queue.put(read_buffer.value)
-
-    def write(self, data):
-        if self._pipe_handle is None:
-            raise PipeError(
-                'You need to call open to open he client connection first'
-            )
-        self._write_queue.put(data)
-
-    @property
-    def has_data(self):
-        return not self._read_queue.empty()
-
-    def read(self):
-        if self._pipe_handle is None:
-            raise PipeError(
-                'You need to call open to open he client connection first'
-            )
-        if self._read_queue.empty():
-            raise PipeError('Read buffer is empty')
-        try:
-            return self._read_queue.get()
-        finally:
-            self._read_queue.task_done()
-
-    def close(self):
-        if self._pipe_handle is None:
-            raise PipeError(
-                'You need to call open to open he client connection first'
-            )
-        self.__read_event.set()
-        self.__write_event.set()
-
-        kernel32.CloseHandle(self._pipe_handle)
-        self.__write_thread.join()
-        self.__read_thread.join()
 
 
 def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
     pipe_name = _create_pipe_name(pipe_name)
     while True:
-        pipe_handle = kernel32.CreateFileA(
+        pipe_handle = CreateFile(
             pipe_name,
             GENERIC_READ | GENERIC_WRITE,
             0,
@@ -1191,14 +1569,14 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
         )
         if pipe_handle != INVALID_HANDLE_VALUE:
             break
-        if kernel32.GetLastError() != ERROR_PIPE_BUSY:
+        if GetLastError() != ERROR_PIPE_BUSY:
             pass
-        elif kernel32.WaitNamedPipeA(pipe_name, 2000) == 0:
-            kernel32.CloseHandle(pipe_handle)
+        elif WaitNamedPipe(pipe_name, 2000) == 0:
+            CloseHandle(pipe_handle)
             return False
 
     pipe_mode = ULONG(PIPE_READMODE_MESSAGE)
-    result = kernel32.SetNamedPipeHandleState(
+    result = SetNamedPipeHandleState(
         pipe_handle,
         ctypes.byref(pipe_mode),
         NULL,
@@ -1206,8 +1584,8 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
     )
 
     if not result:
-        err = kernel32.GetLastError()
-        kernel32.CloseHandle(pipe_handle)
+        err = GetLastError()
+        CloseHandle(pipe_handle)
         if err:
             raise PipeError(err)
         else:
@@ -1219,7 +1597,7 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
 
     while len(msg) != write_bytes.value:
 
-        result = kernel32.WriteFile(
+        result = WriteFile(
             pipe_handle,
             LPCSTR(msg),
             len(msg),
@@ -1227,10 +1605,10 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
             None
         )
         if not result:
-            err = kernel32.GetLastError()
+            err = GetLastError()
 
             if err != ERROR_MORE_DATA:
-                kernel32.CloseHandle(pipe_handle)
+                CloseHandle(pipe_handle)
                 raise PipeError(err)
 
     result = 0
@@ -1238,7 +1616,7 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
     read_bytes = ULONG(0)
 
     while not result:  # repeat loop if ERROR_MORE_DATA
-        result = kernel32.ReadFile(
+        result = ReadFile(
             pipe_handle,
             read_buffer,
             packet_size,
@@ -1246,11 +1624,11 @@ def send_single_message(pipe_name, msg, packet_size=DEFAULT_PACKET_SIZE):
             NULL
         )
 
-        err = kernel32.GetLastError()
+        err = GetLastError()
         if err != ERROR_MORE_DATA:
             break
 
-    kernel32.CloseHandle(pipe_handle)
+    CloseHandle(pipe_handle)
     return read_buffer.value
 
 
@@ -1258,22 +1636,64 @@ if __name__ == '__main__':
     server = Server('TestPipe')
     client = Client('TestPipe')
 
+    import time
+
+    LOGGING.debug('Opening Server')
     server.open()
+    time.sleep(2.0)
+
+    LOGGING.debug('Opening Client')
     client.open()
 
-    client.write('This is client test data')
+    LOGGING.debug('Writing Client Data')
+    evnt = threading.Event()
 
-    while True:
-        for s_client in server:
-            if s_client.has_data:
-                print s_client.read()
-                s_client.write('This is server test data')
+    def server_write_callback(id):
+        LOGGING.debug('SERVER DATA WRITTEN: ' + str(id))
+
+        while True:
+            if client.has_data:
+                in_data = client.read()
+                LOGGING.debug('DATA READ FROM CLIENT: ' + in_data)
+                if int(in_data.split(': ')[1]) == 9:
+                    evnt.set()
                 break
-        else:
-            continue
-        break
 
-    while True:
-        if client.has_data:
-            print client.read()
-            break
+
+    def client_write_callback(id):
+        LOGGING.debug('CLIENT DATA WRITTEN: ' + str(id))
+        while True:
+            for s_client in server:
+                while s_client.has_data:
+                    try:
+                        in_data = s_client.read()
+                    except PipeError:
+                        continue
+                    LOGGING.debug('DATA READ FROM SERVER: ' + in_data)
+                    LOGGING.debug(
+                        'WRITING SERVER: ' + str(
+                            s_client.write(
+                                'This is server test data: ' +
+                                in_data.split(': ')[1],
+                                server_write_callback
+                            )
+                        )
+                    )
+            if evnt.isSet():
+                break
+
+    for i in range(10):
+        LOGGING.debug(
+            'WRITING CLIENT: ' + str(
+                client.write(
+                    'This is client test data: ' + str(i),
+                    client_write_callback
+                )
+            )
+        )
+
+    evnt.wait()
+    client.close()
+    server.close()
+
+
